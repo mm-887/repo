@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+gitpython
+python-dotenv
+tree-sitter==0.25.0
+tree-sitter-python==0.25.0
+networkx
+chromadb
+sentence-transformers
+google-genai
+mcp>=2.0.0
