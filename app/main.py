@@ -16,6 +16,7 @@ from app.parser.pipeline import IndexLimitExceeded, index_repo
 from app.graph import manifest
 from app.graph.vector_store import search
 from app.graph.store import ambiguity_detail, display_path, node_detail
+from app.graph.tree import build_tree
 from app.github.source_files import SourceNotFound, SourceNotText, SourcePathError, read_source
 from app.llm.interface import LLMError, LLMQuotaExceeded
 from app.rag.engine import answer_question
@@ -49,6 +50,9 @@ def _host_name(host_header: str) -> str:
 
 @app.middleware("http")
 async def request_forgery_guard(request: Request, call_next):
+    # Host check blocks DNS rebinding; Origin check blocks cross-site POSTs (CORS alone does not stop the side effect).
+    # A request with no Origin (curl, scripts, the MCP server) is not a browser cross-site request and is allowed.
+    # Allowed hosts/origins are read per request so they can be changed without re-importing.
     if _host_name(request.headers.get("host", "")) not in [h.lower() for h in config.ALLOWED_HOSTS]:
         return JSONResponse(status_code=400, content={"detail": "Host not allowed."})
     origin = request.headers.get("origin")
@@ -86,6 +90,7 @@ async def index_limit_handler(request: Request, exc: IndexLimitExceeded):
 
 @app.exception_handler(LLMError)
 async def llm_error_handler(request: Request, exc: LLMError):
+    # 429 for quota; everything else is 500. Never 502-504: the frontend reads those as "backend unreachable".
     status = 429 if isinstance(exc, LLMQuotaExceeded) else 500
     return JSONResponse(status_code=status, content={"detail": exc.message})
 
@@ -171,6 +176,15 @@ def node_endpoint(owner: str, repo_name: str, node_id: str = QueryParam(alias="i
     return node_detail(graph, matches[0], owner, repo_name)
 
 
+@app.get("/repos/{owner}/{repo_name}/tree")
+def tree_endpoint(owner: str, repo_name: str):
+    validate_repo_id(owner, repo_name)
+    graph = get_graph(owner, repo_name)
+    if not graph:
+        raise HTTPException(status_code=404, detail="Repo not found")
+    return build_tree(graph, owner, repo_name)
+
+
 @app.post("/repos/{owner}/{repo_name}/index")
 def index_repo_endpoint(owner: str, repo_name: str, refresh: bool = True):
     ref = validate_repo_id(owner, repo_name)
@@ -190,6 +204,7 @@ def index_repo_endpoint(owner: str, repo_name: str, refresh: bool = True):
             try:
                 graph = index_repo(owner, repo_name, refreshed_from=refreshed["previous"] if moved else None)
             except BaseException:
+                # Keep the checkout in step with the still-stored previous index.
                 if moved:
                     rollback_checkout(ref, refreshed["previous"])
                 raise
@@ -286,6 +301,7 @@ def get_graph_visual(owner: str, repo_name: str, layout: bool = False):
     if not graph:
         raise HTTPException(status_code=404, detail="Repo not found. Please clone it first.")
 
+    # layout=false skips the expensive spring_layout (minutes on large graphs) for clients that lay the graph out themselves.
     pos = nx.spring_layout(graph.G, k=0.5, iterations=50) if layout else _spiral_positions(graph.G)
 
     nodes = []

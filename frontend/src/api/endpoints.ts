@@ -18,6 +18,7 @@ import {
   searchResponseSchema,
   sourceResponseSchema,
   symbolResponseSchema,
+  treeNodeSchema,
   type CloneResponse,
   type GraphResponse,
   type HealthResponse,
@@ -25,6 +26,7 @@ import {
   type NodeDetail,
   type SourceResponse,
   type SymbolResponse,
+  type TreeNode,
 } from './schemas'
 
 const repoPath = (owner: string, repo: string) =>
@@ -33,6 +35,10 @@ const repoPath = (owner: string, repo: string) =>
 export const getHealth = (signal?: AbortSignal): Promise<HealthResponse> =>
   apiRequest('/', healthSchema, { signal })
 
+/**
+ * Clone + parse + embed + store, all inside one blocking request (can take minutes for big repos).
+ * The URL is validated and canonicalised first, because the backend 500s on malformed input.
+ */
 export function cloneRepo(repoUrl: string, signal?: AbortSignal): Promise<CloneResponse> {
   const ref = parseGitHubRepoUrl(repoUrl)
   if (!ref) {
@@ -47,18 +53,29 @@ export function cloneRepo(repoUrl: string, signal?: AbortSignal): Promise<CloneR
   })
 }
 
+/** Re-parse an already-cloned repo. 404 (not_found) when it has never been cloned. */
 export const indexRepo = (owner: string, repo: string, signal?: AbortSignal): Promise<IndexResponse> =>
   apiRequest(`${repoPath(owner, repo)}/index`, indexResponseSchema, { method: 'POST', signal })
 
+/**
+ * Raw graph payload. `layout: false` asks the server to skip its spring layout, which costs minutes on large
+ * repos (fastapi: ~100s vs 0.4s) and is useless to us since sigma lays the graph out itself; positions are then a
+ * cheap spiral seed. Backends that predate the parameter ignore it and still answer correctly, just slower.
+ */
 export const getGraph = (owner: string, repo: string, signal?: AbortSignal): Promise<GraphResponse> =>
   apiRequest(`${repoPath(owner, repo)}/graph`, graphResponseSchema, { params: { layout: 'false' }, signal })
- 
+
+/**
+ * Index stats for a repo. The backend reports "graph not loaded" as HTTP 200 `{error}`;
+ * that is surfaced here as ApiError('backend') so callers can use it as an "is indexed?" probe.
+ */
 export async function getRepoStatus(owner: string, repo: string, signal?: AbortSignal) {
   const res = await apiRequest(`${repoPath(owner, repo)}/debug`, debugResponseSchema, { signal })
   if ('error' in res) throw new ApiError('backend', res.error)
   return res
 }
 
+/** Direct callers and callees of a symbol, by name. */
 export const getSymbolNeighbors = (
   owner: string,
   repo: string,
@@ -76,6 +93,10 @@ export const getSource = (owner: string, repo: string, path: string, signal?: Ab
 export const getNodeDetail = (owner: string, repo: string, id: string, signal?: AbortSignal): Promise<NodeDetail> =>
   apiRequest(`${repoPath(owner, repo)}/node`, nodeDetailSchema, { params: { id }, signal })
 
+export const getTree = (owner: string, repo: string, signal?: AbortSignal): Promise<TreeNode> =>
+  apiRequest(`${repoPath(owner, repo)}/tree`, treeNodeSchema, { signal })
+
+/** Semantic search. The backend 404s for "no results" and for "no such collection"; both mean []. */
 export async function searchSymbols(
   owner: string,
   repo: string,
@@ -96,6 +117,7 @@ export async function searchSymbols(
 
 export interface AskSource {
   symbol: string
+  /** Repo-relative path. */
   file: string
   startLine: number | null
   endLine: number | null
@@ -103,14 +125,17 @@ export interface AskSource {
 }
 
 export interface AskResult {
+  /** Markdown. */
   answer: string
   seedSymbol: string | null
   direction: 'in' | 'out' | null
   traversedPath: string[]
   sources: AskSource[]
+  /** True when the backend had nothing to retrieve (answer is just "No context found"). */
   noContext: boolean
 }
 
+/** One blocking LLM round-trip (several seconds). Optional fields default to empty. */
 export async function askQuestion(
   owner: string,
   repo: string,
@@ -122,6 +147,7 @@ export async function askQuestion(
     body: { question },
     signal,
   }).catch((e: unknown) => {
+    // The backend does not catch LLM failures (quota, outage), so they surface as a bare 500 with no detail.
     if (isApiError(e) && e.kind === 'server' && /internal (server )?error/i.test(e.message)) {
       throw new ApiError('server', 'The assistant could not answer. The language model may be rate-limited or unavailable; try again later.', e.status)
     }

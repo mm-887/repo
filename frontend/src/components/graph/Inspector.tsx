@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { X } from 'lucide-react'
+import { describeFileNeighbors } from '../../graph/filesView'
 import { describeNeighbors, traceFrom, type RepoGraph } from '../../graph/model'
 import { INCOMING_COLOR, KIND_COLOR, KIND_LABEL, OUTGOING_COLOR } from '../../graph/palette'
-import useGraphUi from '../../store/useGraphUi'
+import useGraphUi, { type InspectorTab } from '../../store/useGraphUi'
 import CodePanel from './CodePanel'
 
 const PREVIEW = 12
@@ -91,7 +92,7 @@ const TraceControls = ({ graph, id }: { graph: RepoGraph; id: string }) => {
   )
 }
 
-type Tab = 'relations' | 'code'
+type Tab = InspectorTab
 
 const TabBar = ({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) => {
   const item = (key: Tab, label: string) => (
@@ -112,11 +113,12 @@ const TabBar = ({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) => 
   )
 }
 
-const InspectorBody = ({ graph, id, owner, repo }: { graph: RepoGraph; id: string; owner: string; repo: string }) => {
+const InspectorBody = ({ graph, id, owner, repo, files }: { graph: RepoGraph; id: string; owner: string; repo: string; files: boolean }) => {
   const select = useGraphUi((s) => s.select)
-  const [tab, setTab] = useState<Tab>('relations')
+  const tab = useGraphUi((s) => s.inspectorTab)
+  const setTab = useGraphUi((s) => s.setInspectorTab)
   const a = graph.getNodeAttributes(id)
-  const groups = useMemo(() => describeNeighbors(graph, id), [graph, id])
+  const groups = useMemo(() => (files ? describeFileNeighbors(graph, id) : describeNeighbors(graph, id)), [graph, id, files])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && select(null)
@@ -157,7 +159,7 @@ const InspectorBody = ({ graph, id, owner, repo }: { graph: RepoGraph; id: strin
 
       {tab === 'relations' ? (
         <>
-          <TraceControls graph={graph} id={id} />
+          {!files && <TraceControls graph={graph} id={id} />}
           <div className="flex-1 min-h-0 overflow-y-auto p-4 pt-3">
             {groups.length === 0 ? (
               <p className="text-sm text-zinc-500">No relationships were found for this symbol.</p>
@@ -176,10 +178,10 @@ const InspectorBody = ({ graph, id, owner, repo }: { graph: RepoGraph; id: strin
 }
 
 /** Details and relationships of the selected node. Neighbours are computed locally from the graph by id. */
-const Inspector = ({ graph, owner, repo }: { graph: RepoGraph; owner: string; repo: string }) => {
+const Inspector = ({ graph, owner, repo, files = false }: { graph: RepoGraph; owner: string; repo: string; files?: boolean }) => {
   const selectedId = useGraphUi((s) => s.selectedId)
   if (!selectedId || !graph.hasNode(selectedId)) return null
-  return <InspectorBody key={selectedId} graph={graph} id={selectedId} owner={owner} repo={repo} />
+  return <InspectorBody key={`${files}:${selectedId}`} graph={graph} id={selectedId} owner={owner} repo={repo} files={files} />
 }
 
 export default Inspector

@@ -24,6 +24,7 @@ export type NodeAttrs = {
 
 export type EdgeAttrs = {
   kind: EdgeKind
+  weight?: number
   size: number
   opacity: number
   color: string

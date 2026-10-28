@@ -9,6 +9,7 @@ import {
   getRepoStatus,
   getSource,
   getSymbolNeighbors,
+  getTree,
   indexRepo,
   searchSymbols,
 } from './endpoints'
@@ -22,6 +23,7 @@ export const queryKeys = {
   search: (owner: string, repo: string, query: string) => ['repo', owner, repo, 'search', query] as const,
   source: (owner: string, repo: string, path: string) => ['repo', owner, repo, 'source', path] as const,
   node: (owner: string, repo: string, id: string) => ['repo', owner, repo, 'node', id] as const,
+  tree: (owner: string, repo: string) => ['repo', owner, repo, 'tree'] as const,
 }
 
 export const useSource = (owner?: string, repo?: string, path?: string) =>
@@ -29,6 +31,15 @@ export const useSource = (owner?: string, repo?: string, path?: string) =>
     queryKey: queryKeys.source(owner ?? '', repo ?? '', path ?? ''),
     queryFn: ({ signal }) => getSource(owner!, repo!, path!, signal),
     enabled: !!owner && !!repo && !!path,
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+
+export const useTree = (owner?: string, repo?: string, enabled = true) =>
+  useQuery({
+    queryKey: queryKeys.tree(owner ?? '', repo ?? ''),
+    queryFn: ({ signal }) => getTree(owner!, repo!, signal),
+    enabled: enabled && !!owner && !!repo,
     staleTime: 5 * 60_000,
     retry: false,
   })
@@ -42,7 +53,7 @@ export const useNodeDetail = (owner?: string, repo?: string, id?: string) =>
     retry: false,
   })
 
-
+/** Polls the backend root so the UI can show whether the API is up. */
 export const useHealth = () =>
   useQuery({
     queryKey: queryKeys.health,
@@ -51,6 +62,10 @@ export const useHealth = () =>
     retry: false,
   })
 
+/**
+ * The graph layout is re-randomised on every request, so it is cached until the repo is
+ * re-indexed (the mutations below invalidate it) instead of refetching on mount.
+ */
 export const useGraph = (owner?: string, repo?: string) =>
   useQuery({
     queryKey: queryKeys.graph(owner ?? '', repo ?? ''),
@@ -59,6 +74,7 @@ export const useGraph = (owner?: string, repo?: string) =>
     staleTime: Infinity,
   })
 
+/** Whether a repo is indexed, with its node/edge counts. Errors with kind 'backend' when it is not. */
 export const useRepoStatus = (owner?: string, repo?: string) =>
   useQuery({
     queryKey: queryKeys.status(owner ?? '', repo ?? ''),
@@ -86,6 +102,7 @@ export const useSearch = (owner?: string, repo?: string, query = '') => {
   })
 }
 
+/** Clone + index. On success every cached query for that repo is dropped so it refetches fresh. */
 export function useCloneRepo() {
   const qc = useQueryClient()
   return useMutation({
@@ -106,9 +123,14 @@ export interface AskVariables {
   owner: string
   repo: string
   question: string
+  /** Re-ask after a failure; the chat then does not add a second copy of the user's question. */
   retry?: boolean
 }
 
+/**
+ * One blocking LLM round-trip. Pass lifecycle callbacks as hook options (not to `mutate()`): hook-level
+ * callbacks still run if the component that asked has unmounted, `mutate()`-level ones do not.
+ */
 export const useAskQuestion = (
   options: Pick<UseMutationOptions<AskResult, Error, AskVariables>, 'onMutate' | 'onSuccess' | 'onError' | 'onSettled'> = {},
 ) =>

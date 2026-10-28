@@ -16,5 +16,7 @@ export type {
   SearchResponse,
   SourceResponse,
   SymbolResponse,
+  TreeNode,
+  TreeRollup,
 } from './schemas'
 export * from './workflow'

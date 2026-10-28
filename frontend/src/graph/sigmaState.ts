@@ -5,10 +5,12 @@ import type { NodeKind } from '../api/normalize'
 import type { EdgeAttrs, NodeAttrs, RepoGraph } from './model'
 import { INCOMING_COLOR, OUTGOING_COLOR, type EdgeKind } from './palette'
 
+/** Custom per-item state. Sigma only refreshes items whose state changed (see `styles` below). */
 export interface NodeUiState {
   isDimmed: boolean
   isNeighbor: boolean
   isSelected: boolean
+  /** Force the label on (selection and small neighbourhoods); otherwise sigma decides by label density. */
   isLabeled: boolean
 }
 export interface EdgeUiState {
@@ -24,6 +26,13 @@ export const initialEdgeState: EdgeUiState = { isDimmed: false, isOutgoing: fals
 const DIM_COLOR = '#3f3f46'
 const LABEL_COLOR = '#e4e4e7'
 
+/**
+ * Declarative styles instead of node/edge reducers. Reducers are opaque to sigma 4, which then re-evaluates
+ * *every* node and edge on each pan/zoom state change (profiled: it dominated the main thread on large
+ * graphs). Rules built only from `attribute` bindings and `whenState` predicates are classified as per-item
+ * state, so a pan/zoom costs nothing and a selection only touches the items whose state actually changed.
+ * Do not add `when: () =>` functions or value functions here: they silently bring the full refresh back.
+ */
 export const styles: SigmaOptions<NodeAttrs, EdgeAttrs, Attributes, NodeUiState, EdgeUiState>['styles'] = {
   nodes: [
     {
@@ -70,7 +79,9 @@ const NODE_STATE: Record<NodeRole, NodeUiState> = {
   quietNeighbor: { isDimmed: false, isNeighbor: true, isSelected: false, isLabeled: false },
   selected: { isDimmed: false, isNeighbor: false, isSelected: true, isLabeled: true },
 }
+/** Above this many neighbours, forcing every label on would bury the graph in text. */
 const MAX_LABELED_NEIGHBORS = 40
+// edges reuse the numeric roles: Dimmed, Neighbor = outgoing from selection, Selected = incoming to it
 const EDGE_STATE: Record<Role, EdgeUiState> = {
   [Role.None]: { isDimmed: false, isOutgoing: false, isIncoming: false },
   [Role.Dimmed]: { isDimmed: true, isOutgoing: false, isIncoming: false },
@@ -78,15 +89,20 @@ const EDGE_STATE: Record<Role, EdgeUiState> = {
   [Role.Selected]: { isDimmed: false, isOutgoing: false, isIncoming: true },
 }
 
+/** Pushes UI filters and the current selection into sigma as item state, sending only what changed. */
 export function createStateSync(sigma: RepoSigma, graph: RepoGraph) {
   let hiddenNodes = new Set<string>()
   let hiddenEdges = new Set<string>()
   const nodeRole = new Map<string, NodeRole>()
   const edgeRole = new Map<string, Role>()
 
-  function applyFilters(hiddenKinds: ReadonlySet<NodeKind>, hiddenEdgeKinds: ReadonlySet<EdgeKind>) {
+  function applyFilters(
+    hiddenKinds: ReadonlySet<NodeKind>,
+    hiddenEdgeKinds: ReadonlySet<EdgeKind>,
+    isHidden: (id: string, a: NodeAttrs) => boolean = () => false,
+  ) {
     const nextNodes = new Set<string>()
-    graph.forEachNode((id, a) => hiddenKinds.has(a.kind) && nextNodes.add(id))
+    graph.forEachNode((id, a) => (hiddenKinds.has(a.kind) || isHidden(id, a)) && nextNodes.add(id))
     const nextEdges = new Set<string>()
     graph.forEachEdge((id, a, source, target) => {
       if (hiddenEdgeKinds.has(a.kind) || nextNodes.has(source) || nextNodes.has(target)) nextEdges.add(id)
@@ -102,6 +118,10 @@ export function createStateSync(sigma: RepoSigma, graph: RepoGraph) {
     hiddenEdges = nextEdges
   }
 
+  /**
+   * Emphasise either one selected node and its neighbours, or a group of nodes (the first is the seed) and the
+   * edges among them; everything else is dimmed. With neither, all emphasis is cleared.
+   */
   function applyFocus(selectedId: string | null, groupIds: readonly string[] | null) {
     const selected = selectedId !== null && graph.hasNode(selectedId) ? selectedId : null
     const group = !selected && groupIds ? groupIds.filter((id) => graph.hasNode(id)) : null

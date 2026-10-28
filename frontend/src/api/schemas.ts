@@ -1,3 +1,6 @@
+// Runtime schemas for every FastAPI response. They mirror what app/main.py actually
+// returns (verified against live responses, see __fixtures__/), so a backend change
+// surfaces as a clear ApiError('schema') instead of a crash deep inside a component.
 import { z } from 'zod'
 
 export const healthSchema = z.object({
@@ -48,6 +51,7 @@ export const graphEdgeSchema = z.object({
   id: z.string(),
   source: z.string(),
   target: z.string(),
+  /** Relationship type (calls/defines/inherits/imports); absent in graphs served by an older backend. */
   type: z.string().nullish(),
   animated: z.boolean(),
   style: z.object({ stroke: z.string() }),
@@ -74,6 +78,7 @@ const searchMetadataSchema = z.object({
   end_line: z.number(),
 })
 
+// /search returns Chroma's raw QueryResult: every field is a list-of-lists (one inner list per query).
 export const searchResponseSchema = z.object({
   ids: z.array(z.array(z.string())),
   documents: z.array(z.array(z.string())),
@@ -90,6 +95,7 @@ const debugBaseSchema = z.object({
   sample_names: z.array(z.string()),
 })
 
+// /debug answers HTTP 200 with {error} when the graph is not loaded.
 export const debugResponseSchema = z.union([
   debugBaseSchema.extend({
     seed_node_id: z.string().nullable().optional(),
@@ -100,6 +106,7 @@ export const debugResponseSchema = z.union([
   z.object({ error: z.string() }),
 ])
 
+// /ask returns the full dict, or just {answer} when there is no context (e.g. repo not indexed).
 export const askResponseSchema = z.object({
   answer: z.string(),
   seed_symbol: z.string().nullable().optional(),
@@ -145,6 +152,38 @@ export const nodeDetailSchema = z.object({
   callers: z.array(symbolRefSchema).optional(),
   callees: z.array(symbolRefSchema).optional(),
 })
+
+const treeRollupSchema = z.object({
+  files: z.number().optional(),
+  loc: z.number().optional(),
+  tokens: z.number().optional(),
+  total_complexity: z.number().optional(),
+  max_complexity: z.number().optional(),
+})
+
+export type TreeRollup = z.infer<typeof treeRollupSchema>
+
+export interface TreeNode {
+  name: string
+  path: string
+  type: 'file' | 'dir'
+  node_id?: string | null
+  metrics?: z.infer<typeof nodeMetricsSchema> | null
+  rollup?: TreeRollup | null
+  children?: TreeNode[]
+}
+
+export const treeNodeSchema: z.ZodType<TreeNode> = z.lazy(() =>
+  z.object({
+    name: z.string(),
+    path: z.string(),
+    type: z.enum(['file', 'dir']),
+    node_id: z.string().nullish(),
+    metrics: nodeMetricsSchema.nullish(),
+    rollup: treeRollupSchema.nullish(),
+    children: z.array(treeNodeSchema).optional(),
+  }),
+)
 
 export type NodeMetrics = z.infer<typeof nodeMetricsSchema>
 export type SourceResponse = z.infer<typeof sourceResponseSchema>

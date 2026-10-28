@@ -2,12 +2,15 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNod
 import { Maximize, RefreshCw, Search as SearchIcon, SlidersHorizontal } from 'lucide-react'
 import { useSearch } from '../../api'
 import type { GraphModel } from '../../graph/built'
-import { createSearch, mergeSearchResults, type BuiltGraph } from '../../graph/model'
+import { getClusters, type Cluster } from '../../graph/clusters'
+import { getFilesGraph } from '../../graph/filesView'
+import { createSearch, mergeSearchResults, type BuiltGraph, type RepoGraph } from '../../graph/model'
 import { EDGE_COLOR, EDGE_KINDS, EDGE_LABEL, KIND_COLOR, KIND_LABEL, NODE_KINDS } from '../../graph/palette'
 import useGraphUi from '../../store/useGraphUi'
 
 const panel = 'bg-zinc-900/85 backdrop-blur-md border border-zinc-800 rounded-xl shadow-2xl'
 
+/** Search and layout controls share one wrapping row, so a narrow canvas stacks them instead of overlapping. */
 export const GraphTopBar = ({ children }: { children: ReactNode }) => (
   <div className="absolute top-3 left-3 right-3 z-20 flex flex-wrap items-start gap-2 pointer-events-none [&>*]:pointer-events-auto">
     {children}
@@ -19,6 +22,10 @@ interface Item {
   section: 'name' | 'meaning'
 }
 
+/**
+ * Find a symbol and fly to it. Name matches appear instantly; matches by meaning come from the backend's
+ * embedding search (debounced) and are shown underneath. Press "/" anywhere on the page to jump here.
+ */
 export const GraphSearch = ({ model, owner, repo }: { model: GraphModel; owner: string; repo: string }) => {
   const { graph, resolveSymbol } = model
   const [query, setQuery] = useState('')
@@ -31,6 +38,7 @@ export const GraphSearch = ({ model, owner, repo }: { model: GraphModel; owner: 
   const search = useMemo(() => createSearch(graph), [graph])
   const names = useMemo(() => search(query, 6), [search, query])
 
+  // Embedding search costs a round-trip, so only ask once typing pauses and the query is meaningful.
   useEffect(() => {
     const t = setTimeout(() => setSettled(query.trim()), 350)
     return () => clearTimeout(t)
@@ -94,6 +102,7 @@ export const GraphSearch = ({ model, owner, repo }: { model: GraphModel; owner: 
           e.preventDefault()
           choose(item.id)
         }}
+        // mousemove, not mouseenter: a pointer resting over the list must not override the keyboard when results change under it
         onMouseMove={() => setActive(index)}
         className={`cursor-pointer px-3 py-1.5 flex items-center gap-2 text-sm ${index === active ? 'bg-zinc-800' : ''}`}
       >
@@ -147,6 +156,7 @@ export const GraphSearch = ({ model, owner, repo }: { model: GraphModel; owner: 
   )
 }
 
+/** Re-run the force layout, re-frame the camera, and show when the layout is still settling. */
 export const LayoutControls = () => {
   const running = useGraphUi((s) => s.layoutRunning)
   const relayout = useGraphUi((s) => s.relayout)
@@ -172,17 +182,125 @@ export const LayoutControls = () => {
   )
 }
 
-export const GraphLegend = ({ stats }: { stats: BuiltGraph['stats'] }) => {
+const segment = (on: boolean) =>
+  `cursor-pointer px-2.5 py-1.5 text-xs font-semibold rounded-lg transition-colors ${on ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:text-zinc-200'}`
+
+export const ViewControls = ({ graph }: { graph: RepoGraph }) => {
+  const viewMode = useGraphUi((s) => s.viewMode)
+  const colorMode = useGraphUi((s) => s.colorMode)
+  const setViewMode = useGraphUi((s) => s.setViewMode)
+  const setColorMode = useGraphUi((s) => s.setColorMode)
+  const toFiles = () => {
+    const selected = useGraphUi.getState().selectedId
+    setViewMode('files', selected ? getFilesGraph(graph).fileOf(selected) : null)
+  }
+  return (
+    <div className="flex items-center gap-2">
+      <div role="group" aria-label="Graph view" className={`${panel} flex items-center p-0.5`}>
+        <button className={segment(viewMode === 'symbols')} aria-pressed={viewMode === 'symbols'} onClick={() => setViewMode('symbols')} title="Functions, classes and modules">
+          Symbols
+        </button>
+        <button className={segment(viewMode === 'files')} aria-pressed={viewMode === 'files'} onClick={toFiles} title="One node per file, edges weighted by cross-file links">
+          Modules
+        </button>
+      </div>
+      <div role="group" aria-label="Colour nodes by" className={`${panel} flex items-center p-0.5`}>
+        <button className={segment(colorMode === 'kind')} aria-pressed={colorMode === 'kind'} onClick={() => setColorMode('kind')} title="Colour by node kind">
+          Kind
+        </button>
+        <button className={segment(colorMode === 'package')} aria-pressed={colorMode === 'package'} onClick={() => setColorMode('package')} title="Colour by package folder">
+          Package
+        </button>
+      </div>
+    </div>
+  )
+}
+
+export const PackageLegend = ({ clusters }: { clusters: Cluster[] }) => {
+  const hiddenClusters = useGraphUi((s) => s.hiddenClusters)
+  const toggleCluster = useGraphUi((s) => s.toggleCluster)
+  const highlight = useGraphUi((s) => s.highlight)
+  const depth = useGraphUi((s) => s.clusterDepth)
+  const setDepth = useGraphUi((s) => s.setClusterDepth)
+  const pathFilter = useGraphUi((s) => s.pathFilter)
+  const setPathFilter = useGraphUi((s) => s.setPathFilter)
+  const [draft, setDraft] = useState(pathFilter)
+  useEffect(() => {
+    if (draft === useGraphUi.getState().pathFilter) return
+    const t = setTimeout(() => setPathFilter(draft), 300)
+    return () => clearTimeout(t)
+  }, [draft, setPathFilter])
+  return (
+    <div aria-label="Packages">
+      <div className="flex items-center mb-1.5">
+        <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Packages</span>
+        <select
+          aria-label="Package depth"
+          value={depth}
+          onChange={(e) => setDepth(Number(e.target.value))}
+          className="ml-auto bg-zinc-800 border border-zinc-700 rounded text-[11px] text-zinc-300 px-1 py-0.5 cursor-pointer"
+        >
+          {[1, 2, 3].map((d) => (
+            <option key={d} value={d}>
+              depth {d}
+            </option>
+          ))}
+        </select>
+      </div>
+      <input
+        aria-label="Filter by path"
+        placeholder="Filter by path…"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        className="w-full mb-1.5 bg-zinc-800/80 border border-zinc-700 rounded px-2 py-1 text-base sm:text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-brand-primary/50"
+      />
+      <ul className="max-h-48 overflow-y-auto">
+        {clusters.map((c) => {
+          const off = hiddenClusters.has(c.key)
+          return (
+            <li key={c.key} className="flex items-center gap-1">
+              <button
+                aria-label={`${off ? 'Show' : 'Hide'} ${c.key}`}
+                aria-pressed={!off}
+                onClick={() => toggleCluster(c.key)}
+                className="cursor-pointer shrink-0 p-1 rounded hover:bg-zinc-800"
+              >
+                <span className={`block w-2.5 h-2.5 rounded-full ${off ? 'opacity-25' : ''}`} style={{ background: c.color }} />
+              </button>
+              <button
+                onClick={() => highlight(c.ids, [], `package ${c.key}`)}
+                title={`Highlight ${c.key}`}
+                className={`cursor-pointer min-w-0 flex-1 flex items-center gap-2 text-left text-xs px-1 py-0.5 rounded hover:bg-zinc-800 ${off ? 'text-zinc-600 line-through' : 'text-zinc-300'}`}
+              >
+                <span className="truncate">{c.key}</span>
+                <span className="ml-auto tabular-nums text-zinc-500">{c.ids.length.toLocaleString()}</span>
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+/** Legend that doubles as the filter panel: click a kind to hide or show it. Collapses behind a button on phones. */
+export const GraphLegend = ({ stats, graph }: { stats: BuiltGraph['stats']; graph: RepoGraph }) => {
   const hiddenKinds = useGraphUi((s) => s.hiddenKinds)
   const hiddenEdgeKinds = useGraphUi((s) => s.hiddenEdgeKinds)
   const toggleKind = useGraphUi((s) => s.toggleKind)
   const toggleEdgeKind = useGraphUi((s) => s.toggleEdgeKind)
+  const colorMode = useGraphUi((s) => s.colorMode)
+  const depth = useGraphUi((s) => s.clusterDepth)
+  const clusters = useMemo(() => (colorMode === 'package' ? getClusters(graph, depth).list : null), [colorMode, graph, depth])
   const [open, setOpen] = useState(false)
   const chip = (off: boolean) =>
     `cursor-pointer flex items-center gap-2 text-xs w-full text-left px-1.5 py-0.5 rounded hover:bg-zinc-800 ${off ? 'text-zinc-600 line-through' : 'text-zinc-300'}`
 
   return (
-    <div className="absolute bottom-3 left-3 z-10 flex flex-col items-start gap-2" aria-label="Legend and filters">
+    <div
+      className="absolute bottom-3 left-3 top-48 md:top-28 z-10 flex flex-col justify-end items-start gap-2 pointer-events-none *:pointer-events-auto"
+      aria-label="Legend and filters"
+    >
       <button
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
@@ -190,7 +308,12 @@ export const GraphLegend = ({ stats }: { stats: BuiltGraph['stats'] }) => {
       >
         <SlidersHorizontal size={13} /> Filters
       </button>
-      <div className={`${panel} p-3 w-44 ${open ? 'block' : 'hidden'} md:block`}>
+      <div className={`${panel} p-3 w-52 min-h-0 overflow-y-auto ${open ? 'block' : 'hidden'} md:block`}>
+        {clusters && (
+          <div className="mb-3">
+            <PackageLegend clusters={clusters} />
+          </div>
+        )}
         <div className="text-[10px] font-bold text-zinc-500 uppercase mb-1.5 tracking-widest">Nodes</div>
         {NODE_KINDS.map((kind) => (
           <button key={kind} className={chip(hiddenKinds.has(kind))} aria-pressed={!hiddenKinds.has(kind)} onClick={() => toggleKind(kind)}>
@@ -212,6 +335,7 @@ export const GraphLegend = ({ stats }: { stats: BuiltGraph['stats'] }) => {
   )
 }
 
+/** Shown while a group (an answer's traversal, or a call-chain trace) is highlighted, so there is a way back. */
 export const HighlightBanner = () => {
   const highlighted = useGraphUi((s) => s.highlightedIds)
   const note = useGraphUi((s) => s.highlightNote)
