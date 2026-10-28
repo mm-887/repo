@@ -74,7 +74,7 @@ RepoGraph clones a GitHub repository, parses its Python source with [Tree-sitter
 ### 1. Clone the project
 
 ```bash
-git clone https://github.com/<your-org>/RepoGraph.git
+git clone https://github.com/mm-887/RepoGraph.git
 cd RepoGraph
 ```
 
