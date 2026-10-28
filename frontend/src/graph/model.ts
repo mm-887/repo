@@ -1,16 +1,23 @@
 import Graph from 'graphology'
 import { nodeKind, toRepoRelativePath, type NodeKind, type SearchHit } from '../api/normalize'
-import type { GraphResponse } from '../api/schemas'
+import type { GraphResponse, NodeMetrics } from '../api/schemas'
 import { EDGE_COLOR, KIND_COLOR, type EdgeKind } from './palette'
 
 export type NodeAttrs = {
   label: string
   kind: NodeKind
+  /** Repo-relative path, '' for external modules. */
   file: string
+  /** 1-based line of the definition, null for modules and externals. */
   line: number | null
+  /** 1-based inclusive last line of the definition, null when the backend did not say. */
+  endLine: number | null
+  /** Null for graphs indexed before schema version 3. */
+  metrics: NodeMetrics | null
   x: number
   y: number
   size: number
+  /** Size when selected; precomputed because sigma only skips full refreshes for attribute bindings. */
   selectedSize: number
   color: string
 }
@@ -29,6 +36,7 @@ export interface BuiltGraph {
   stats: {
     nodes: number
     edges: number
+    /** Path-only module nodes folded into their file's module entity. */
     mergedModules: number
     byKind: Record<NodeKind, number>
     byEdgeKind: Record<EdgeKind, number>
@@ -37,6 +45,10 @@ export interface BuiltGraph {
 
 const basename = (p: string) => p.split(/[\\/]/).pop() || p
 
+/**
+ * Node ids are `{file}:{name}:{start_row}` (modules: `{file}:{file}:0`), and the file may itself contain
+ * a drive-letter colon, so peel from the right using the known label.
+ */
 export function parseNodeId(id: string, label: string): { file: string; row: number | null } {
   const m = /^(.*):(\d+)$/.exec(id)
   if (!m) return { file: id, row: null }
@@ -49,6 +61,10 @@ const EDGE_PRIORITY: EdgeKind[] = ['calls', 'inherits', 'defines', 'imports', 'o
 
 const isEdgeKind = (t: string | null | undefined): t is EdgeKind => t === 'calls' || t === 'imports' || t === 'defines' || t === 'inherits'
 
+/**
+ * Re-indexed graphs say what each edge is (`type`). Older ones only flag `calls` via `animated`, so the kind is
+ * inferred from the endpoints: imports connect modules, defines go class -> its own method, inherits go class -> class.
+ */
 export function inferEdgeKind(
   animated: boolean,
   src: NodeKind,
@@ -73,12 +89,18 @@ const nodeSize = (kind: NodeKind, degree: number) => {
 
 const edgeLook = (kind: EdgeKind) => ({ size: kind === 'calls' ? 1 : 0.6, opacity: kind === 'calls' ? 0.45 : 0.25, color: EDGE_COLOR[kind] })
 
+/** Turns the /graph payload into a graphology graph ready for sigma (colours, sizes, merged modules). */
 export function buildGraph(data: GraphResponse, owner: string, repo: string): BuiltGraph {
+  // A module entity is recognisable structurally: its label is the file path repeated in its own id
+  // (`{file}:{file}:{row}`). Not by `type`: the endpoint rewrites the type to "class" for any name containing
+  // "class", which also hits modules such as test_custom_route_class.py.
   const moduleEntityFile = (n: GraphResponse['nodes'][number]) => {
     const { file, row } = parseNodeId(n.id, n.data.label)
     return row !== null && file === n.data.label ? file : null
   }
 
+  // An import edge starts from a bare-path node, separate from the file's real module entity. The entity id
+  // ends in the row where the module's first statement starts (not always 0: leading blank lines shift it).
   const entityOf = new Map<string, string>()
   for (const n of data.nodes) {
     const file = moduleEntityFile(n)
@@ -106,6 +128,8 @@ export function buildGraph(data: GraphResponse, owner: string, repo: string): Bu
       kind,
       file: kind === 'external' ? '' : toRepoRelativePath(file, owner, repo),
       line: isModule || kind === 'external' || row === null ? null : row + 1,
+      endLine: n.data.end_line ?? null,
+      metrics: n.data.metrics ?? null,
       x: Number.isFinite(n.position.x) ? n.position.x : 0,
       y: Number.isFinite(n.position.y) ? n.position.y : 0,
       size: 4,
@@ -124,6 +148,7 @@ export function buildGraph(data: GraphResponse, owner: string, repo: string): Bu
     const kind = inferEdgeKind(e.animated, s.kind, t.kind, s.label, t.label, e.type)
 
     if (graph.hasDirectedEdge(source, target)) {
+      // Merging aliased nodes can produce parallel edges; keep the most informative kind.
       const key = graph.directedEdge(source, target)!
       const prev = graph.getEdgeAttribute(key, 'kind')
       if (EDGE_PRIORITY.indexOf(kind) < EDGE_PRIORITY.indexOf(prev)) {
@@ -148,10 +173,23 @@ export function buildGraph(data: GraphResponse, owner: string, repo: string): Bu
   }
 }
 
+const PATH_TIER = 4
+
+/**
+ * Ranked label search: exact, prefix, word-start, then substring; ties go to the better-connected node.
+ * Module nodes also match on their repo-relative path (a file or directory), after every label match.
+ */
 export function createSearch(graph: RepoGraph) {
-  const entries: { id: string; label: string; lower: string; degree: number; external: boolean }[] = []
+  const entries: { id: string; label: string; lower: string; path: string; degree: number; external: boolean }[] = []
   graph.forEachNode((id, a) =>
-    entries.push({ id, label: a.label, lower: a.label.toLowerCase(), degree: graph.degree(id), external: a.kind === 'external' }),
+    entries.push({
+      id,
+      label: a.label,
+      lower: a.label.toLowerCase(),
+      path: a.kind === 'module' ? a.file.toLowerCase() : '',
+      degree: graph.degree(id),
+      external: a.kind === 'external',
+    }),
   )
 
   return (query: string, limit = 8): string[] => {
@@ -160,8 +198,14 @@ export function createSearch(graph: RepoGraph) {
     const scored: { id: string; score: number; degree: number }[] = []
     for (const e of entries) {
       const i = e.lower.indexOf(q)
-      if (i === -1) continue
+      if (i === -1) {
+        const p = e.path.indexOf(q)
+        if (p !== -1) scored.push({ id: e.id, score: PATH_TIER + (p === 0 ? 0 : 0.5) + (e.path === q ? -0.25 : 0), degree: e.degree })
+        continue
+      }
       const tier = e.lower === q ? 0 : i === 0 ? 1 : /[._/\\-]/.test(e.lower[i - 1]) ? 2 : 3
+      // Within a tier: case-exact matches first, and project symbols before external imports (an external
+      // 'fastapi' with 586 importers must not outrank the 'FastAPI' class just for being well connected).
       const score = tier - (e.label === query.trim() ? 0.25 : 0) + (e.external ? 0.5 : 0)
       scored.push({ id: e.id, score, degree: e.degree })
     }
@@ -176,6 +220,7 @@ export interface NeighborGroup {
   ids: string[]
 }
 
+/** Neighbours of a node grouped by relationship, for the inspector. Direction follows the edge. */
 export function describeNeighbors(graph: RepoGraph, id: string): NeighborGroup[] {
   const buckets: Record<string, string[]> = {}
   const add = (key: string, other: string) => (buckets[key] ??= []).push(other)
@@ -204,6 +249,7 @@ export function describeNeighbors(graph: RepoGraph, id: string): NeighborGroup[]
     }))
 }
 
+/** A symbol as the `/ask` endpoint reports it: name, repo-relative file and 1-based start line. */
 export interface SymbolRef {
   symbol: string
   file: string
@@ -212,6 +258,10 @@ export interface SymbolRef {
 
 const sep = '\u0000'
 
+/**
+ * Maps an `/ask` source (`{symbol, file, lines}`) back to a graph node. Names are not unique, so the file and
+ * start line disambiguate; modules are reported by full path, graph labels use the basename.
+ */
 export function createSymbolIndex(graph: RepoGraph) {
   const byFileLabel = new Map<string, string[]>()
   const byLabel = new Map<string, string[]>()
@@ -226,6 +276,7 @@ export function createSymbolIndex(graph: RepoGraph) {
     const sameFile = byFileLabel.get(file + sep + label)
     if (sameFile?.length) {
       if (sameFile.length === 1 || startLine === null) return sameFile[0]
+      // the same name can be defined twice in one file (redefinitions, overloads): take the closest line
       const gap = (id: string) => Math.abs((graph.getNodeAttribute(id, 'line') ?? Infinity) - startLine)
       return [...sameFile].sort((a, b) => gap(a) - gap(b))[0]
     }
@@ -237,14 +288,21 @@ export function createSymbolIndex(graph: RepoGraph) {
 export interface TraceOptions {
   maxDepth?: number
   maxNodes?: number
+  /** Edge kinds to follow. The backend's own BFS (`RepoGraph.bfs`) follows calls, inherits and defines. */
   kinds?: readonly EdgeKind[]
 }
 
 export interface Trace {
+  /** Breadth-first order, the seed first. */
   ids: string[]
+  /** More nodes were reachable than `maxNodes` allowed. */
   truncated: boolean
 }
 
+/**
+ * Breadth-first walk from `seed` along outgoing edges (what it calls) or incoming edges (what calls it),
+ * mirroring the backend's `bfs` so the UI and the MCP tools agree on what a call chain is.
+ */
 export function traceFrom(graph: RepoGraph, seed: string, direction: 'out' | 'in', opts: TraceOptions = {}): Trace {
   const { maxDepth = 2, maxNodes = 40, kinds = ['calls'] } = opts
   if (!graph.hasNode(seed)) return { ids: [], truncated: false }
@@ -279,6 +337,10 @@ export interface RelatedHit {
   id: string
 }
 
+/**
+ * Combines instant name matches with the backend's semantic matches: semantic hits that resolve to a graph
+ * node and are not already name matches. (Unresolvable hits cannot be focused, so they are left out.)
+ */
 export function mergeSearchResults(
   localIds: readonly string[],
   semantic: readonly SearchHit[],

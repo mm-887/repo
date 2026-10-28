@@ -11,7 +11,10 @@ export type {
   GraphResponse,
   HealthResponse,
   IndexResponse,
+  NodeDetail,
+  NodeMetrics,
   SearchResponse,
+  SourceResponse,
   SymbolResponse,
 } from './schemas'
 export * from './workflow'

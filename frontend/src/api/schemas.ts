@@ -23,9 +23,24 @@ export const indexResponseSchema = z.object({
   graph: graphCountsSchema,
 })
 
+export const nodeMetricsSchema = z.object({
+  complexity: z.number().optional(),
+  tokens: z.number().optional(),
+  loc: z.number().optional(),
+  total_complexity: z.number().optional(),
+  max_complexity: z.number().optional(),
+  imports: z.number().optional(),
+})
+
 export const graphNodeSchema = z.object({
   id: z.string(),
-  data: z.object({ label: z.string(), type: z.string() }),
+  data: z.object({
+    label: z.string(),
+    type: z.string(),
+    file: z.string().nullish(),
+    end_line: z.number().nullish(),
+    metrics: nodeMetricsSchema.nullish(),
+  }),
   position: z.object({ x: z.number(), y: z.number() }),
 })
 
@@ -102,7 +117,39 @@ export const askResponseSchema = z.object({
     .optional(),
 })
 
-export type HealthResponse = z.infer<typeof healthSchema>
+export const sourceResponseSchema = z.object({
+  path: z.string(),
+  language: z.string().optional(),
+  content: z.string(),
+  lines: z.number().optional(),
+  truncated: z.boolean().optional(),
+})
+
+const importRefSchema = z.object({
+  name: z.string().optional(),
+  names: z.array(z.string()).optional(),
+})
+
+const symbolRefSchema = z.object({ id: z.string(), name: z.string() })
+
+export const nodeDetailSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  type: z.string().optional(),
+  file: z.string().nullish(),
+  start_line: z.number().nullish(),
+  end_line: z.number().nullish(),
+  metrics: nodeMetricsSchema.nullish(),
+  imports: z.array(importRefSchema.extend({ target: z.string() })).optional(),
+  imported_by: z.array(importRefSchema.extend({ source: z.string() })).optional(),
+  callers: z.array(symbolRefSchema).optional(),
+  callees: z.array(symbolRefSchema).optional(),
+})
+
+export type NodeMetrics = z.infer<typeof nodeMetricsSchema>
+export type SourceResponse = z.infer<typeof sourceResponseSchema>
+export type NodeDetail = z.infer<typeof nodeDetailSchema>
+export type HealthResponse =z.infer<typeof healthSchema>
 export type CloneResponse = z.infer<typeof cloneResponseSchema>
 export type IndexResponse = z.infer<typeof indexResponseSchema>
 export type GraphNode = z.infer<typeof graphNodeSchema>

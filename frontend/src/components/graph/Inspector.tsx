@@ -3,6 +3,7 @@ import { X } from 'lucide-react'
 import { describeNeighbors, traceFrom, type RepoGraph } from '../../graph/model'
 import { INCOMING_COLOR, KIND_COLOR, KIND_LABEL, OUTGOING_COLOR } from '../../graph/palette'
 import useGraphUi from '../../store/useGraphUi'
+import CodePanel from './CodePanel'
 
 const PREVIEW = 12
 
@@ -42,6 +43,10 @@ const NeighborList = ({ graph, title, ids }: { graph: RepoGraph; title: string; 
 
 const MAX_TRACE_NODES = 60
 
+/**
+ * Follow call edges several levels out (what this calls) or in (what calls this) and highlight the chain.
+ * The lists below only show direct neighbours; this answers "what is affected if I change this?".
+ */
 const TraceControls = ({ graph, id }: { graph: RepoGraph; id: string }) => {
   const [depth, setDepth] = useState(2)
   const highlight = useGraphUi((s) => s.highlight)
@@ -86,8 +91,30 @@ const TraceControls = ({ graph, id }: { graph: RepoGraph; id: string }) => {
   )
 }
 
-const InspectorBody = ({ graph, id }: { graph: RepoGraph; id: string }) => {
+type Tab = 'relations' | 'code'
+
+const TabBar = ({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) => {
+  const item = (key: Tab, label: string) => (
+    <button
+      role="tab"
+      aria-selected={tab === key}
+      onClick={() => onChange(key)}
+      className={`cursor-pointer px-3 py-1.5 text-xs font-semibold border-b-2 -mb-px ${tab === key ? 'border-brand-primary text-zinc-100' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+    >
+      {label}
+    </button>
+  )
+  return (
+    <div role="tablist" aria-label="Inspector sections" className="flex px-2 border-b border-zinc-800">
+      {item('relations', 'Relationships')}
+      {item('code', 'Code')}
+    </div>
+  )
+}
+
+const InspectorBody = ({ graph, id, owner, repo }: { graph: RepoGraph; id: string; owner: string; repo: string }) => {
   const select = useGraphUi((s) => s.select)
+  const [tab, setTab] = useState<Tab>('relations')
   const a = graph.getNodeAttributes(id)
   const groups = useMemo(() => describeNeighbors(graph, id), [graph, id])
 
@@ -100,7 +127,7 @@ const InspectorBody = ({ graph, id }: { graph: RepoGraph; id: string }) => {
   return (
     <aside
       aria-label="Symbol inspector"
-      className="absolute z-20 flex flex-col bg-zinc-900/90 inset-x-3 bottom-3 max-h-[60%] sm:inset-x-auto sm:top-3 sm:right-3 sm:w-80 sm:max-h-none backdrop-blur-md border border-zinc-800 rounded-xl shadow-2xl"
+      className={`absolute z-20 flex flex-col bg-zinc-900/90 inset-x-3 bottom-3 max-h-[60%] sm:inset-x-auto sm:top-3 sm:right-3 sm:max-h-none backdrop-blur-md border border-zinc-800 rounded-xl shadow-2xl ${tab === 'code' ? 'sm:w-96 lg:w-136' : 'sm:w-80'}`}
     >
       <header className="flex items-start gap-2 p-4 pb-3 border-b border-zinc-800">
         <div className="min-w-0 flex-1">
@@ -126,23 +153,33 @@ const InspectorBody = ({ graph, id }: { graph: RepoGraph; id: string }) => {
         <span style={{ color: INCOMING_COLOR }}>← {graph.inDegree(id)} incoming</span>
       </div>
 
-      <TraceControls graph={graph} id={id} />
+      <TabBar tab={tab} onChange={setTab} />
 
-      <div className="flex-1 min-h-0 overflow-y-auto p-4 pt-3">
-        {groups.length === 0 ? (
-          <p className="text-sm text-zinc-500">No relationships were found for this symbol.</p>
-        ) : (
-          groups.map((g) => <NeighborList key={g.key} graph={graph} title={g.title} ids={g.ids} />)
-        )}
-      </div>
+      {tab === 'relations' ? (
+        <>
+          <TraceControls graph={graph} id={id} />
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 pt-3">
+            {groups.length === 0 ? (
+              <p className="text-sm text-zinc-500">No relationships were found for this symbol.</p>
+            ) : (
+              groups.map((g) => <NeighborList key={g.key} graph={graph} title={g.title} ids={g.ids} />)
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 pt-3">
+          <CodePanel graph={graph} id={id} owner={owner} repo={repo} />
+        </div>
+      )}
     </aside>
   )
 }
 
-const Inspector = ({ graph }: { graph: RepoGraph }) => {
+/** Details and relationships of the selected node. Neighbours are computed locally from the graph by id. */
+const Inspector = ({ graph, owner, repo }: { graph: RepoGraph; owner: string; repo: string }) => {
   const selectedId = useGraphUi((s) => s.selectedId)
   if (!selectedId || !graph.hasNode(selectedId)) return null
-  return <InspectorBody key={selectedId} graph={graph} id={selectedId} />
+  return <InspectorBody key={selectedId} graph={graph} id={selectedId} owner={owner} repo={repo} />
 }
 
 export default Inspector

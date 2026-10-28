@@ -29,6 +29,7 @@ class Query(BaseModel):
 
 app = FastAPI(title="RepoGraph", version="0.1.0")
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.ALLOWED_ORIGINS,
@@ -37,11 +38,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 def _host_name(host_header: str) -> str:
+    """Host header without its port; handles bracketed IPv6 ("[::1]:8000")."""
     host = host_header.strip().lower()
     if host.startswith("["):
         return host[1:].split("]", 1)[0]
     return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+
 
 @app.middleware("http")
 async def request_forgery_guard(request: Request, call_next):
@@ -54,6 +58,7 @@ async def request_forgery_guard(request: Request, call_next):
 
 
 def _check_text(value: str, limit: int, field: str, allow_empty: bool = False) -> str:
+    """Reject empty or oversized user text with a 400 (string detail) before any search or LLM call."""
     if not allow_empty and not value.strip():
         raise HTTPException(status_code=400, detail=f"{field} must not be empty.")
     if len(value) > limit:
@@ -137,6 +142,35 @@ async def query_endpoint(owner: str, repo_name: str, function_name: str):
             "node_id": node_id,
         }
     
+@app.get("/repos/{owner}/{repo_name}/source")
+def source_endpoint(owner: str, repo_name: str, path: str):
+    ref = validate_repo_id(owner, repo_name)
+    _check_text(path, config.MAX_QUESTION_CHARS, "path")
+    try:
+        return read_source(ref, path)
+    except SourcePathError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except SourceNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except SourceNotText as e:
+        raise HTTPException(status_code=415, detail=str(e))
+
+
+@app.get("/repos/{owner}/{repo_name}/node")
+def node_endpoint(owner: str, repo_name: str, node_id: str = QueryParam(alias="id")):
+    validate_repo_id(owner, repo_name)
+    _check_text(node_id, config.MAX_QUESTION_CHARS, "id")
+    graph = get_graph(owner, repo_name)
+    if not graph:
+        raise HTTPException(status_code=404, detail="Repo not found")
+    matches = graph.find_symbols(node_id)
+    if not matches:
+        raise HTTPException(status_code=404, detail="Node not found")
+    if len(matches) > 1:
+        raise HTTPException(status_code=409, detail=ambiguity_detail(graph, node_id, matches, owner, repo_name))
+    return node_detail(graph, matches[0], owner, repo_name)
+
+
 @app.post("/repos/{owner}/{repo_name}/index")
 def index_repo_endpoint(owner: str, repo_name: str, refresh: bool = True):
     ref = validate_repo_id(owner, repo_name)
@@ -156,7 +190,6 @@ def index_repo_endpoint(owner: str, repo_name: str, refresh: bool = True):
             try:
                 graph = index_repo(owner, repo_name, refreshed_from=refreshed["previous"] if moved else None)
             except BaseException:
-                # Keep the checkout in step with the still-stored previous index.
                 if moved:
                     rollback_checkout(ref, refreshed["previous"])
                 raise
@@ -237,6 +270,8 @@ def debug_endpoint(owner: str, repo_name: str, question: str = ""):
     return result
 
 def _spiral_positions(G):
+    """Cheap O(n) stand-in for spring_layout: nodes on a sunflower spiral in the unit disk, in insertion order
+    (so nodes parsed from the same file stay close). Meant only as a seed for a client-side layout."""
     n = max(G.number_of_nodes(), 1)
     golden_angle = math.pi * (3 - math.sqrt(5))
     return {
@@ -255,12 +290,19 @@ def get_graph_visual(owner: str, repo_name: str, layout: bool = False):
 
     nodes = []
     for node_id, attrs in graph.G.nodes(data=True):
+        data = {
+            "label": attrs.get('name', str(node_id)),
+            "type": attrs.get('type', 'module')
+        }
+        if attrs.get('file'):
+            data["file"] = display_path(attrs['file'], owner, repo_name)
+        if isinstance(attrs.get('end_line'), int):
+            data["end_line"] = attrs['end_line'] + 1
+        if attrs.get('metrics'):
+            data["metrics"] = attrs['metrics']
         nodes.append({
             "id": str(node_id),
-            "data": {
-                "label": attrs.get('name', str(node_id)),
-                "type": attrs.get('type', 'module')
-            },
+            "data": data,
             "position": { "x": pos[node_id][0] * 1000, "y": pos[node_id][1] * 1000 }
         })
     edges = []

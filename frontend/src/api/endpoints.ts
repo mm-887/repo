@@ -14,12 +14,16 @@ import {
   graphResponseSchema,
   healthSchema,
   indexResponseSchema,
+  nodeDetailSchema,
   searchResponseSchema,
+  sourceResponseSchema,
   symbolResponseSchema,
   type CloneResponse,
   type GraphResponse,
   type HealthResponse,
   type IndexResponse,
+  type NodeDetail,
+  type SourceResponse,
   type SymbolResponse,
 } from './schemas'
 
@@ -48,7 +52,7 @@ export const indexRepo = (owner: string, repo: string, signal?: AbortSignal): Pr
 
 export const getGraph = (owner: string, repo: string, signal?: AbortSignal): Promise<GraphResponse> =>
   apiRequest(`${repoPath(owner, repo)}/graph`, graphResponseSchema, { params: { layout: 'false' }, signal })
-
+ 
 export async function getRepoStatus(owner: string, repo: string, signal?: AbortSignal) {
   const res = await apiRequest(`${repoPath(owner, repo)}/debug`, debugResponseSchema, { signal })
   if ('error' in res) throw new ApiError('backend', res.error)
@@ -65,6 +69,12 @@ export const getSymbolNeighbors = (
     params: { function_name: functionName },
     signal,
   })
+
+export const getSource = (owner: string, repo: string, path: string, signal?: AbortSignal): Promise<SourceResponse> =>
+  apiRequest(`${repoPath(owner, repo)}/source`, sourceResponseSchema, { params: { path }, signal })
+
+export const getNodeDetail = (owner: string, repo: string, id: string, signal?: AbortSignal): Promise<NodeDetail> =>
+  apiRequest(`${repoPath(owner, repo)}/node`, nodeDetailSchema, { params: { id }, signal })
 
 export async function searchSymbols(
   owner: string,

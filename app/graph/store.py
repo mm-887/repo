@@ -7,6 +7,7 @@ MAX_CANDIDATES = 10
 
 
 def display_path(file, owner: str = None, repo: str = None):
+    """Repo-relative path for a stored absolute file path, so errors do not expose the server's layout."""
     if not file or not owner or not repo:
         return file
     path = str(file).replace('\\', '/')
@@ -18,6 +19,7 @@ def display_path(file, owner: str = None, repo: str = None):
 
 
 def symbol_candidates(graph, matches: list, owner: str = None, repo: str = None, limit: int = MAX_CANDIDATES) -> list:
+    """Describe ambiguous matches for a client: node id, qualified name, file and 1-based line (None for modules)."""
     out = []
     for node_id in matches[:limit]:
         data = graph.G.nodes.get(node_id, {})
@@ -40,6 +42,55 @@ def ambiguity_detail(graph, name: str, matches: list, owner: str = None, repo: s
     return f"'{name}' is ambiguous: {len(matches)} matches: " + "; ".join(shown) + more + ". Pass a qualified name (for example Class.method) or a node id."
 
 
+def _node_label(G, node_id, owner, repo):
+    data = G.nodes[node_id]
+    if data.get('type') == 'module' and data.get('file'):
+        return display_path(data['file'], owner, repo)
+    return data.get('name', node_id)
+
+
+def _edge_has_kind(edge, kind):
+    return kind in (edge.get('kinds') or [edge.get('type')])
+
+
+def node_detail(graph, node_id, owner: str = None, repo: str = None) -> dict:
+    G = graph.G
+    data = G.nodes[node_id]
+    start, end = data.get('start_line'), data.get('end_line')
+    has_lines = isinstance(start, int) and isinstance(end, int)
+
+    def ref(other):
+        return {"id": other, "name": _node_label(G, other, owner, repo)}
+
+    imports = []
+    for target in G.successors(node_id):
+        edge = G.edges[node_id, target]
+        if _edge_has_kind(edge, 'imports'):
+            imports.append({"target": target, "name": _node_label(G, target, owner, repo), "names": list(edge.get('names', []))})
+    imported_by = []
+    for source in G.predecessors(node_id):
+        edge = G.edges[source, node_id]
+        if _edge_has_kind(edge, 'imports'):
+            imported_by.append({"source": source, "name": _node_label(G, source, owner, repo), "names": list(edge.get('names', []))})
+
+    def ordered(items):
+        return sorted(items, key=lambda item: (item["name"], item.get("target") or item.get("source") or item["id"]))
+
+    return {
+        "id": node_id,
+        "name": _node_label(G, node_id, owner, repo),
+        "type": data.get('type', 'module'),
+        "file": display_path(data.get('file'), owner, repo) if data.get('file') else None,
+        "start_line": start + 1 if has_lines else None,
+        "end_line": end + 1 if has_lines else None,
+        "metrics": data.get('metrics'),
+        "imports": ordered(imports),
+        "imported_by": ordered(imported_by),
+        "callers": ordered([ref(n) for n in graph.get_callers(node_id)]),
+        "callees": ordered([ref(n) for n in graph.get_callees(node_id)]),
+    }
+
+
 class RepoGraph:
     def __init__(self):
         self.G = nx.DiGraph()
@@ -57,6 +108,11 @@ class RepoGraph:
                     self.name_index.setdefault(alias, []).append(entity['id'])
 
     def find_symbols(self, name: str) -> list:
+        """Every node a user-supplied symbol could mean, without picking one.
+
+        An exact node id wins, then an exact name_index hit. A dotted name with no exact hit also matches
+        names ending in ".<name>" (so `Inner.run` finds `Outer.Inner.run`).
+        """
         if not name:
             return []
         if self.G.has_node(name):
@@ -101,3 +157,4 @@ class RepoGraph:
                 if len(visited) >= max_nodes:
                     break
         return ordered_nodes
+        

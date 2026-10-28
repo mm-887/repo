@@ -5,7 +5,9 @@ import {
   cloneRepo,
   getGraph,
   getHealth,
+  getNodeDetail,
   getRepoStatus,
+  getSource,
   getSymbolNeighbors,
   indexRepo,
   searchSymbols,
@@ -18,7 +20,28 @@ export const queryKeys = {
   status: (owner: string, repo: string) => ['repo', owner, repo, 'status'] as const,
   symbol: (owner: string, repo: string, name: string) => ['repo', owner, repo, 'symbol', name] as const,
   search: (owner: string, repo: string, query: string) => ['repo', owner, repo, 'search', query] as const,
+  source: (owner: string, repo: string, path: string) => ['repo', owner, repo, 'source', path] as const,
+  node: (owner: string, repo: string, id: string) => ['repo', owner, repo, 'node', id] as const,
 }
+
+export const useSource = (owner?: string, repo?: string, path?: string) =>
+  useQuery({
+    queryKey: queryKeys.source(owner ?? '', repo ?? '', path ?? ''),
+    queryFn: ({ signal }) => getSource(owner!, repo!, path!, signal),
+    enabled: !!owner && !!repo && !!path,
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+
+export const useNodeDetail = (owner?: string, repo?: string, id?: string) =>
+  useQuery({
+    queryKey: queryKeys.node(owner ?? '', repo ?? '', id ?? ''),
+    queryFn: ({ signal }) => getNodeDetail(owner!, repo!, id!, signal),
+    enabled: !!owner && !!repo && !!id,
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+
 
 export const useHealth = () =>
   useQuery({
