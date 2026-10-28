@@ -8,7 +8,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPOS_DIR = os.path.join(PROJECT_ROOT, "data", "repositories")
 GRAPHS_DIR = os.path.join(PROJECT_ROOT, "data", "graphs")
 os.makedirs(GRAPHS_DIR, exist_ok=True)
-CHROMA_DIR = os.path.join(PROJECT_ROOT, "data", "chromadb")
+CHROMA_DIR = os.getenv("CHROMA_DIR", os.path.join(PROJECT_ROOT, "data", "chromadb"))
 TMP_DIR = os.path.join(PROJECT_ROOT, "data", "tmp")
 
 INDEX_MAX_FILE_BYTES = int(os.getenv("INDEX_MAX_FILE_BYTES", "1048576"))
