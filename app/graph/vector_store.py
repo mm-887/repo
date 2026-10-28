@@ -50,7 +50,7 @@ def index_entities(owner, repo_name, entities, batch_size=5000):
         seen.add(doc_id)
         new_ids.append(doc_id)
         documents.append(document)
-        metadatas.append({k: v for k, v in entity.items() if k != 'code'})
+        metadatas.append({k: v for k, v in entity.items() if k not in ('code', 'metrics')})
 
     for entity in entities:
         doc_text = create_retrieval_text(entity)

@@ -1,7 +1,7 @@
 from collections import deque
 import networkx as nx
 
-GRAPH_SCHEMA_VERSION = 2
+GRAPH_SCHEMA_VERSION = 3
 
 MAX_CANDIDATES = 10
 

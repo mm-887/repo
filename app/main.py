@@ -3,7 +3,7 @@ import math
 from app import config
 from fastapi import HTTPException
 from app.graph.registry import get_graph
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query as QueryParam, Request
 from fastapi.responses import JSONResponse
 from app.github.repo_ref import InvalidRepoError, checkout_path, parse_repo_url, validate_repo_id
 from app.github.repo_lock import RepoBusy, repo_operation
@@ -15,7 +15,8 @@ from pydantic import BaseModel
 from app.parser.pipeline import IndexLimitExceeded, index_repo
 from app.graph import manifest
 from app.graph.vector_store import search
-from app.graph.store import ambiguity_detail
+from app.graph.store import ambiguity_detail, display_path, node_detail
+from app.github.source_files import SourceNotFound, SourceNotText, SourcePathError, read_source
 from app.llm.interface import LLMError, LLMQuotaExceeded
 from app.rag.engine import answer_question
 import networkx as nx

@@ -1,3 +1,6 @@
+from app.parser.metrics import MetricsTracker, add_module_totals
+
+
 def _text(node):
     return node.text.decode("utf-8", "replace")
 
@@ -77,20 +80,23 @@ def _import_relationships(node, module_id):
     return records
 
 
-def traverse(node, entities, file_path, relationships, scope=(None, "", None)):
+def traverse(node, entities, file_path, relationships, scope=(None, "", None), tracker=None):
     """scope = (entity id of the innermost module/class/function, its qualified name '' for a module, module id).
 
     Definitions are named by their qualified name (`Class.method`, `outer.inner`, `Outer.Inner.method`) and get a
     `defines` edge from their direct parent scope. Calls are attributed to the innermost scope, so module-level
     calls belong to the module entity.
     """
+    if tracker is None:
+        tracker = MetricsTracker()
     scope_id, prefix, module_id = scope
     kind = node.type
+    tracker.visit(node)
 
     if kind == "module":
         entity_name = str(file_path)
         module_id = f"{file_path}:{entity_name}:{node.start_point.row}"
-        entities.append({
+        entity = {
             "type": "module",
             "name": entity_name,
             "id": module_id,
@@ -98,8 +104,14 @@ def traverse(node, entities, file_path, relationships, scope=(None, "", None)):
             "end_line": node.end_point.row,
             "file": file_path,
             "code": node.text.decode("utf-8", errors="replace"),
-        })
+        }
+        entities.append(entity)
         scope = (module_id, "", module_id)
+        tracker.push(entity)
+        for child in node.children:
+            traverse(child, entities, file_path, relationships, scope, tracker)
+        tracker.pop()
+        return
 
     elif kind in ("function_definition", "class_definition"):
         name_node = node.child_by_field_name("name")
@@ -108,7 +120,7 @@ def traverse(node, entities, file_path, relationships, scope=(None, "", None)):
             raw = _text(name_node)
             entity_name = f"{prefix}.{raw}" if prefix else raw
             entity_id = f"{file_path}:{entity_name}:{node.start_point.row}"
-            entities.append({
+            entity = {
                 "type": kind,
                 "name": entity_name,
                 "id": entity_id,
@@ -116,7 +128,8 @@ def traverse(node, entities, file_path, relationships, scope=(None, "", None)):
                 "end_line": node.end_point.row,
                 "file": file_path,
                 "code": node.text.decode("utf-8", errors="replace"),
-            })
+            }
+            entities.append(entity)
             if scope_id:
                 relationships.append({"type": "defines", "from": scope_id, "to": entity_id})
 
@@ -128,9 +141,11 @@ def traverse(node, entities, file_path, relationships, scope=(None, "", None)):
                         relationships.append({"type": "inherits", "from": entity_id, "to": base})
 
             inner = (entity_id, entity_name, module_id)
+            tracker.push(entity)
             for child in node.children:
                 # base-class expressions are evaluated in the enclosing scope
-                traverse(child, entities, file_path, relationships, scope if supers is not None and child.id == supers.id else inner)
+                traverse(child, entities, file_path, relationships, scope if supers is not None and child.id == supers.id else inner, tracker)
+            tracker.pop()
             return
 
     elif kind == "call":
@@ -141,14 +156,18 @@ def traverse(node, entities, file_path, relationships, scope=(None, "", None)):
     elif kind in ("import_statement", "import_from_statement"):
         if module_id:  # lazy imports inside functions still bind names for the whole module (approximation)
             relationships.extend(_import_relationships(node, module_id))
+        tracker.visit_leaves(node)
         return
 
     for child in node.children:
-        traverse(child, entities, file_path, relationships, scope)
+        traverse(child, entities, file_path, relationships, scope, tracker)
 
 
 def extract_entities(tree, file_path):
     entities = []
     relationships = []
     traverse(tree.root_node, entities, file_path, relationships)
+    module = next((e for e in entities if e["type"] == "module"), None)
+    if module is not None:
+        add_module_totals(module, entities, relationships)
     return entities, relationships

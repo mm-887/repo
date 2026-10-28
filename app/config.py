@@ -12,7 +12,7 @@ CHROMA_DIR = os.path.join(PROJECT_ROOT, "data", "chromadb")
 TMP_DIR = os.path.join(PROJECT_ROOT, "data", "tmp")
 
 INDEX_MAX_FILE_BYTES = int(os.getenv("INDEX_MAX_FILE_BYTES", "1048576"))
-
+SOURCE_MAX_BYTES = int(os.getenv("SOURCE_MAX_BYTES", "1048576"))
 RAG_CONTEXT_CHAR_BUDGET = int(os.getenv("RAG_CONTEXT_CHAR_BUDGET", "24000"))
 RAG_SNIPPET_CHAR_LIMIT = int(os.getenv("RAG_SNIPPET_CHAR_LIMIT", "8000"))
 RAG_MAX_EXTRA_VECTOR_HITS = int(os.getenv("RAG_MAX_EXTRA_VECTOR_HITS", "3"))
