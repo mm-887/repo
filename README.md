@@ -1,3 +1,9 @@
+---
+title: <name>
+sdk: docker
+app_port: 7860
+---
+
 # RepoGraph
 
 **AI-powered code intelligence platform that turns any GitHub repository into a queryable knowledge graph.**
